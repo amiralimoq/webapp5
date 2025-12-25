@@ -16,8 +16,8 @@
         .content-section.active-section { display: block; }
         
         /* --- Pill Tabs --- */
-        .pill-tabs { display: flex; gap: 15px; margin-bottom: 30px; flex-wrap: wrap; }
-        .pill-tab { padding: 10px 25px; border-radius: 50px; background: white; color: #888; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.3s; border: 1px solid #eee; box-shadow: 0 2px 10px rgba(0,0,0,0.02); }
+        .pill-tabs { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+        .pill-tab { padding: 8px 20px; border-radius: 50px; background: white; color: #888; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.3s; border: 1px solid #eee; box-shadow: 0 2px 10px rgba(0,0,0,0.02); }
         .pill-tab.active-tab { background: #FF724C; color: white; border-color: #FF724C; box-shadow: 0 5px 15px rgba(255, 114, 76, 0.3); }
 
         /* --- Clean Table --- */
@@ -68,7 +68,6 @@
         .user-checkbox-list { max-height: 150px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; padding: 5px; margin-top: 10px; background: white; }
         .user-checkbox-item { display: flex; align-items: center; padding: 8px; font-size: 12px; border-bottom: 1px solid #f5f5f5; }
         
-        /* Date Picker Styling */
         .date-input-group { display: flex; gap: 15px; margin-top: 10px; }
         .date-field { flex: 1; }
         .date-field label { display: block; font-size: 12px; color: #888; margin-bottom: 5px; font-weight: 600; }
@@ -79,7 +78,6 @@
         .status-active { background: #E9FBF0; color: #2ECC71; }
         .status-inactive { background: #FFF0F0; color: #FF7675; }
 
-        /* Report Styles */
         .report-circle { width: 120px; height: 120px; border-radius: 50%; background: conic-gradient(#FF724C 0% 0%, #eee 0% 100%); margin: 0 auto 20px auto; display: flex; align-items: center; justify-content: center; position: relative; }
         .report-circle::after { content: ''; position: absolute; width: 80%; height: 80%; background: white; border-radius: 50%; }
         .report-val { position: absolute; z-index: 2; font-weight: 700; font-size: 18px; color: #333; }
@@ -87,9 +85,16 @@
         .report-info-row:last-child { border: none; }
         
         .modal-close-icon {
-            position: absolute; top: 20px; right: 20px; font-size: 24px; color: #aaa; cursor: pointer; transition: 0.2s;
+            position: absolute; top: 20px; right: 20px; font-size: 24px; color: #aaa; cursor: pointer; transition: 0.2s; z-index: 10;
         }
         .modal-close-icon:hover { color: #FF724C; }
+
+        /* Filter Bar Styles */
+        .filter-bar { display: flex; flex-wrap: wrap; gap: 15px; align-items: flex-end; margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .filter-group { display: flex; flex-direction: column; gap: 5px; }
+        .filter-label { font-size: 12px; color: #888; font-weight: 600; }
+        .small-input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 13px; outline: none; background: white; font-family: 'Poppins', sans-serif; }
+        .filter-btn { background: #FF724C; color: white; border: none; padding: 8px 15px; border-radius: 8px; cursor: pointer; font-size: 13px; height: 38px; display: flex; align-items: center; }
 
         @media (max-width: 768px) {
             .dashboard-container { flex-direction: column; height: auto; border-radius: 0; overflow: visible; }
@@ -110,6 +115,8 @@
             .table-header, .table-row { min-width: 600px; }
             .modal-content { width: 90%; margin: 0 5%; }
             .date-input-group { flex-direction: column; gap: 10px; }
+            .filter-bar { flex-direction: column; align-items: flex-start; }
+            .filter-group { width: 100%; }
         }
         .mobile-menu-btn { display: none; }
     </style>
@@ -190,22 +197,51 @@
                     </button>
                 </div>
 
+                <!-- CATEGORY TABS -->
+                <div class="pill-tabs" id="discount-status-filters">
+                    <div class="pill-tab active-tab" onclick="filterDiscounts('all', this)">All</div>
+                    <div class="pill-tab" onclick="filterDiscounts('active', this)">Active</div>
+                    <div class="pill-tab" onclick="filterDiscounts('expired', this)">Expired</div>
+                    <div class="pill-tab" onclick="filterDiscounts('inactive', this)">Canceled</div>
+                    <div class="pill-tab" onclick="filterDiscounts('single', this)">Single Use</div>
+                    <div class="pill-tab" onclick="filterDiscounts('multi', this)">Multi Use</div>
+                    <div class="pill-tab" onclick="filterDiscounts('public', this)">Public</div>
+                    <div class="pill-tab" onclick="filterDiscounts('private', this)">Private</div>
+                </div>
+
                 <div class="clean-table">
-                    <!-- Date Filter Bar -->
-                    <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
-                        <i class="ri-filter-3-line" style="color: #888;"></i>
-                        <select id="discount-date-filter" class="form-control" style="width: 200px; margin: 0; padding: 8px; font-size: 13px;" onchange="loadDiscounts(this.value)">
-                            <option value="all">All Time</option>
-                            <option value="1">Last 24 Hours</option>
-                            <option value="7">Last 7 Days</option>
-                            <option value="30">Last 30 Days</option>
-                        </select>
+                    <!-- ADVANCED FILTER BAR -->
+                    <div class="filter-bar">
+                        <div class="filter-group">
+                            <span class="filter-label">From Date</span>
+                            <input type="date" id="filter-date-start" class="small-input">
+                        </div>
+                        <div class="filter-group">
+                            <span class="filter-label">To Date</span>
+                            <input type="date" id="filter-date-end" class="small-input">
+                        </div>
+                        <div class="filter-group">
+                            <span class="filter-label">Amount Filter</span>
+                            <div style="display: flex; gap: 5px;">
+                                <input type="number" id="filter-amount" class="small-input" placeholder="Amount" style="width: 80px;">
+                                <select id="filter-amount-op" class="small-input">
+                                    <option value="gt">Greater (>)</option>
+                                    <option value="lt">Less (<)</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button class="filter-btn" onclick="applyAdvancedFilters()">
+                            <i class="ri-filter-3-line" style="margin-right: 5px;"></i> Apply Filter
+                        </button>
+                        <button class="filter-btn" style="background:#888;" onclick="resetAdvancedFilters()">
+                            Reset
+                        </button>
                     </div>
 
                     <div class="table-header">
                         <span class="header-item" style="flex:2">Code Name</span>
                         <span class="header-item" style="flex:1">Type</span>
-                        <span class="header-item" style="flex:1">Usage</span>
+                        <span class="header-item" style="flex:1">Usage Mode</span>
                         <span class="header-item" style="flex:1">Min Order</span>
                         <span class="header-item" style="flex:1">Status (Click to toggle)</span>
                         <span class="header-item" style="flex:1; text-align: right;">Actions</span>
@@ -354,7 +390,7 @@
                     <label class="radio-label"><input type="radio" name="disc-usage" value="single" checked onchange="toggleUsageInput()"> Single Use</label>
                     <label class="radio-label"><input type="radio" name="disc-usage" value="multi" onchange="toggleUsageInput()"> Multi Use</label>
                 </div>
-                <input type="number" id="disc-usage-limit" class="form-control" placeholder="Max usage count (e.g. 5)" style="display:none; margin-top:10px;">
+                <input type="number" id="disc-usage-limit" class="form-control" placeholder="Max usage count per user" style="display:none; margin-top:10px;">
             </div>
 
             <!-- Step 4: Duration -->
