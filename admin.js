@@ -22,9 +22,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             if(targetId === 'customers') loadAllCustomers();
             if(targetId === 'sales') quickReport(30);
             if(targetId === 'users') loadStaffList();
-            if(targetId === 'templates') loadCurrentTheme(); // New
+            if(targetId === 'templates') loadCurrentTheme(); 
             if(targetId === 'reviews') loadReviews();
             if(targetId === 'messages') loadMessages();
+            if(targetId === 'discounts') loadDiscounts();
         });
     });
 
@@ -41,17 +42,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     window.setTheme = async function(themeName, el) {
-        // Optimistic UI update
         updateThemeUI(themeName);
-        // Save to DB
         await supabaseClient.from('settings').upsert({key: 'active_theme', value: themeName});
         alert(`Theme updated to ${themeName}! Refresh menu page to see changes.`);
     }
 
     function updateThemeUI(themeName) {
         document.querySelectorAll('.template-card').forEach(c => c.classList.remove('active-theme'));
-        // Find card by click or manual logic (simple matching here for demo)
-        // In real app, we might add data-theme attribute to cards
         const cards = document.querySelectorAll('.template-card');
         if(themeName === 'default') cards[0].classList.add('active-theme');
         if(themeName === 'dark') cards[1].classList.add('active-theme');
@@ -143,12 +140,314 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.changePass=async(t,id)=>{ const p=prompt('New Pass:'); if(p)await supabaseClient.from(t).update({password:p}).eq('id',id); }
     window.deleteUser=async(t,id)=>{ if(confirm('Delete?')){ await supabaseClient.from(t).delete().eq('id',id); if(t==='staff')loadStaffList(); else loadAdminList(); } }
 
-    // --- REVIEWS ---
+    // --- REVIEWS & MESSAGES ---
     let notif=false,sound=true;
     window.toggleNotifSetting=()=>{ notif=!notif; document.getElementById('notif-state').innerText=notif?'ON':'OFF'; document.getElementById('sound-btn').style.display=notif?'flex':'none'; }
     window.toggleSoundSetting=()=>{ sound=!sound; document.getElementById('sound-state').innerText=sound?'ON':'OFF'; if(sound)document.getElementById('notif-sound').play(); }
     async function loadReviews(){ const {data}=await supabaseClient.from('reviews').select('*'); const c=document.getElementById('reviews-container'); c.innerHTML=''; if(data)data.forEach(r=>{ c.innerHTML+=`<div class="clean-table" style="margin-bottom:10px;padding:15px;"><strong>${r.customer_name}</strong> (${r.rating} stars)<p style="margin:5px 0 0 0;color:#666;">${r.comment}</p></div>`; }); }
     async function loadMessages(){ const {data}=await supabaseClient.from('messages').select('*'); const c=document.getElementById('messages-container'); c.innerHTML=''; if(data)data.forEach(m=>{ c.innerHTML+=`<div style="padding:10px;border-bottom:1px solid #eee;"><b>${m.title}</b>: ${m.body}</div>`; }); }
+
+    // --- DISCOUNTS ---
+    let editingDiscountId = null;
+
+    window.loadDiscounts = async function() {
+        const {data, error} = await supabaseClient.from('discounts').select('*').order('created_at', {ascending: false});
+        const container = document.getElementById('discount-list');
+        container.innerHTML = '';
+        if(data) {
+            data.forEach(d => {
+                const now = new Date();
+                let isExpired = new Date(d.valid_to) < now || (d.usage_type==='multi' && d.usage_count >= d.usage_limit);
+                let statusText = d.status === 'inactive' ? 'Inactive' : (isExpired ? 'Expired' : 'Active');
+                let statusClass = (d.status === 'inactive' || isExpired) ? 'status-inactive' : 'status-active';
+                
+                // Keep 'Expired' logic visual, but if DB says 'inactive', show inactive.
+                if(d.status === 'active' && isExpired) statusText = 'Expired';
+
+                const div = document.createElement('div');
+                div.className = 'table-row';
+                // Safe JSON encode for passing to function
+                const jsonD = JSON.stringify(d).replace(/"/g, '&quot;');
+                
+                div.innerHTML = `
+                    <span style="flex:2; font-weight:600;">${d.code}</span>
+                    <span style="flex:1; font-size:12px;">${d.type.toUpperCase()}</span>
+                    <span style="flex:1; font-size:12px;">${d.usage_type === 'single' ? 'Single' : d.usage_count + '/' + d.usage_limit}</span>
+                    <span style="flex:1; font-size:12px;">$${d.min_order_amount}</span>
+                    <span style="flex:1;">
+                        <span class="badge-status ${statusClass}" onclick="toggleDiscountStatus(${d.id}, '${d.status}')">${statusText}</span>
+                    </span>
+                    <span style="flex:1; text-align:right; display:flex; justify-content:flex-end; gap:10px;">
+                         <button onclick="viewDiscountReport(${jsonD})" style="background:none; border:none; color:#3498DB; cursor:pointer;" title="Report"><i class="ri-eye-line"></i></button>
+                         <button onclick="openDiscountModal(${jsonD})" style="background:none; border:none; color:#F39C12; cursor:pointer;" title="Edit"><i class="ri-pencil-line"></i></button>
+                         <button onclick="deleteDiscount(${d.id})" style="background:none; border:none; color:#FF7675; cursor:pointer;" title="Delete"><i class="ri-delete-bin-line"></i></button>
+                    </span>
+                `;
+                container.appendChild(div);
+            });
+        }
+    }
+
+    // Toggle Status
+    window.toggleDiscountStatus = async function(id, currentStatus) {
+        const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
+        await supabaseClient.from('discounts').update({ status: newStatus }).eq('id', id);
+        loadDiscounts();
+    }
+
+    // View Report
+    window.viewDiscountReport = function(d) {
+        const modal = document.getElementById('discount-report-modal');
+        const content = document.getElementById('report-content');
+        
+        let percentage = 0;
+        if(d.usage_type === 'single') percentage = d.usage_count > 0 ? 100 : 0;
+        else percentage = Math.min(100, Math.round((d.usage_count / d.usage_limit) * 100));
+
+        const now = new Date();
+        const end = new Date(d.valid_to);
+        const timeLeft = Math.max(0, end - now);
+        const daysLeft = Math.floor(timeLeft / (1000 * 60 * 60 * 24));
+        const hoursLeft = Math.floor((timeLeft % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+
+        content.innerHTML = `
+            <div style="font-size:18px; font-weight:700; color:#333; margin-bottom:5px;">${d.code}</div>
+            <div style="color:#888; font-size:12px; margin-bottom:20px;">${d.type.toUpperCase()} - ${d.usage_type.toUpperCase()}</div>
+            
+            <div class="report-circle" style="background: conic-gradient(${percentage < 100 ? '#FF724C' : '#aaa'} ${percentage}%, #eee 0% 100%);">
+                <span class="report-val">${percentage}%</span>
+            </div>
+            <div style="font-size:12px; color:#555; margin-bottom:20px;">Usage Filled</div>
+
+            <div class="clean-table" style="padding:15px; text-align:left;">
+                <div class="report-info-row"><span>Used Count</span> <b>${d.usage_count} times</b></div>
+                <div class="report-info-row"><span>Usage Limit</span> <b>${d.usage_limit}</b></div>
+                <div class="report-info-row"><span>Min Order</span> <b>$${d.min_order_amount}</b></div>
+                <div class="report-info-row"><span>Time Left</span> <b>${daysLeft}d ${hoursLeft}h</b></div>
+                <div class="report-info-row"><span>Status</span> <b style="color:${d.status==='active'?'#2ECC71':'#FF7675'}">${d.status.toUpperCase()}</b></div>
+            </div>
+        `;
+        modal.style.display = 'flex';
+    }
+
+    window.openDiscountModal = function(editData = null) {
+        // Reset Inputs
+        editingDiscountId = null;
+        document.getElementById('modal-title').innerText = "Create Discount Code";
+        document.getElementById('save-disc-btn').innerText = "Create Discount";
+        document.getElementById('disc-code-name').value = '';
+        document.getElementById('disc-usage-limit').value = '';
+        document.getElementById('disc-min-order').value = '0';
+        document.getElementById('target-users-list').innerHTML = '<div style="text-align:center; color:#aaa; font-size:12px;">Select a filter to find users</div>';
+        
+        // Default Radios
+        document.querySelector('input[name="disc-scope"][value="public"]').checked = true;
+        document.querySelector('input[name="disc-usage"][value="single"]').checked = true;
+        document.querySelector('input[name="disc-time"][value="daily"]').checked = true;
+        
+        // --- EDIT MODE FILLING ---
+        if(editData) {
+            editingDiscountId = editData.id;
+            document.getElementById('modal-title').innerText = "Edit Discount Code";
+            document.getElementById('save-disc-btn').innerText = "Update Discount";
+            document.getElementById('disc-code-name').value = editData.code;
+            document.getElementById('disc-min-order').value = editData.min_order_amount;
+            
+            // Scope
+            document.querySelector(`input[name="disc-scope"][value="${editData.type}"]`).checked = true;
+            
+            // Usage
+            document.querySelector(`input[name="disc-usage"][value="${editData.usage_type}"]`).checked = true;
+            if(editData.usage_type === 'multi') document.getElementById('disc-usage-limit').value = editData.usage_limit;
+
+            // Time & Dates
+            const start = new Date(editData.valid_from);
+            const end = new Date(editData.valid_to);
+            const diffHours = (end - start) / (1000 * 60 * 60);
+
+            if(diffHours <= 24 && diffHours > 0) {
+                document.querySelector('input[name="disc-time"][value="hourly"]').checked = true;
+                // Format for Date/Time inputs
+                document.getElementById('disc-hour-date').value = start.toISOString().split('T')[0];
+                document.getElementById('disc-start-time').value = start.toTimeString().slice(0,5);
+                document.getElementById('disc-end-time').value = end.toTimeString().slice(0,5);
+            } else {
+                document.querySelector('input[name="disc-time"][value="daily"]').checked = true;
+                document.getElementById('disc-start-date').value = start.toISOString().split('T')[0];
+                document.getElementById('disc-end-date').value = end.toISOString().split('T')[0];
+            }
+        }
+        
+        // UI Refresh
+        toggleDiscScope();
+        toggleUsageInput();
+        toggleTimeInputs();
+        
+        document.getElementById('discount-modal').style.display = 'flex';
+    }
+
+    window.toggleDiscScope = function() {
+        const isPrivate = document.querySelector('input[name="disc-scope"]:checked').value === 'private';
+        document.getElementById('private-filters').style.display = isPrivate ? 'block' : 'none';
+    }
+
+    window.toggleUsageInput = function() {
+        const isMulti = document.querySelector('input[name="disc-usage"]:checked').value === 'multi';
+        document.getElementById('disc-usage-limit').style.display = isMulti ? 'block' : 'none';
+    }
+
+    window.toggleTimeInputs = function() {
+        const isDaily = document.querySelector('input[name="disc-time"]:checked').value === 'daily';
+        document.getElementById('time-daily').style.display = isDaily ? 'block' : 'none';
+        document.getElementById('time-hourly').style.display = isDaily ? 'none' : 'block';
+    }
+
+    window.updateFilterInputs = function() {
+        const type = document.getElementById('disc-filter-type').value;
+        const inputContainer = document.getElementById('filter-input-container');
+        inputContainer.style.display = (type === 'name' || type === 'phone' || type === 'spender') ? 'block' : 'none';
+        document.getElementById('disc-filter-val').value = '';
+    }
+
+    window.applyDiscountFilter = async function() {
+        const filterType = document.getElementById('disc-filter-type').value;
+        const filterVal = document.getElementById('disc-filter-val').value.toLowerCase().trim();
+        const listContainer = document.getElementById('target-users-list');
+        listContainer.innerHTML = 'Loading...';
+
+        let customers = [];
+        const { data: allCusts } = await supabaseClient.from('customers').select('id, name, phone, created_at');
+        if (!allCusts) { listContainer.innerHTML = 'No customers found.'; return; }
+        
+        if (filterType === 'inactive') {
+            const { data: orders } = await supabaseClient.from('orders').select('customer_id, created_at').order('created_at', {ascending: false});
+            customers = allCusts.filter(c => {
+                const userOrders = orders.filter(o => o.customer_id === c.id);
+                if (userOrders.length === 0) return true; 
+                const diffDays = Math.ceil(Math.abs(new Date() - new Date(userOrders[0].created_at)) / (1000 * 60 * 60 * 24)); 
+                return diffDays > 30; 
+            });
+        } else if (filterType === 'name') {
+            customers = allCusts.filter(c => c.name.toLowerCase().includes(filterVal));
+        } else if (filterType === 'phone') {
+            customers = allCusts.filter(c => c.phone && (c.phone.startsWith(filterVal) || c.phone.endsWith(filterVal)));
+        } else if (filterType === 'spender') {
+            const minAmount = parseFloat(filterVal);
+            if(isNaN(minAmount)) { alert("Please enter a valid amount"); return; }
+            const { data: orders } = await supabaseClient.from('orders').select('customer_id, total_amount');
+            const spenderIds = new Set();
+            orders.forEach(o => { if(o.total_amount >= minAmount) spenderIds.add(o.customer_id); });
+            customers = allCusts.filter(c => spenderIds.has(c.id));
+        }
+
+        listContainer.innerHTML = '';
+        if(customers.length === 0) {
+            listContainer.innerHTML = '<div style="padding:5px;">No matching customers found.</div>';
+        } else {
+            const allDiv = document.createElement('div');
+            allDiv.className = 'user-checkbox-item';
+            allDiv.innerHTML = `<input type="checkbox" id="select-all-users" onchange="document.querySelectorAll('.target-user-cb').forEach(cb => cb.checked = this.checked)"> <b>Select All (${customers.length})</b>`;
+            listContainer.appendChild(allDiv);
+            customers.forEach(c => {
+                const item = document.createElement('div');
+                item.className = 'user-checkbox-item';
+                item.innerHTML = `<input type="checkbox" class="target-user-cb" value="${c.id}"> ${c.name} (${c.phone || '-'})`;
+                listContainer.appendChild(item);
+            });
+        }
+    }
+
+    window.saveDiscount = async function() {
+        const code = document.getElementById('disc-code-name').value.trim();
+        const scope = document.querySelector('input[name="disc-scope"]:checked').value;
+        const usageType = document.querySelector('input[name="disc-usage"]:checked').value;
+        const timeType = document.querySelector('input[name="disc-time"]:checked').value;
+        const minOrder = parseFloat(document.getElementById('disc-min-order').value) || 0;
+        
+        if (!code) return alert("Please enter a Discount Code Name.");
+        
+        let validFrom, validTo;
+        if (timeType === 'daily') {
+            const dStart = document.getElementById('disc-start-date').value;
+            const dEnd = document.getElementById('disc-end-date').value;
+            if(!dStart || !dEnd) return alert("Please select start and end dates.");
+            validFrom = new Date(dStart);
+            validTo = new Date(dEnd);
+            const diffDays = (validTo - validFrom) / (1000 * 60 * 60 * 24);
+            if (diffDays > 30) return alert("Daily discounts cannot exceed 30 days.");
+            if (diffDays < 0) return alert("End date cannot be before start date.");
+        } else {
+            const dateVal = document.getElementById('disc-hour-date').value;
+            const tStart = document.getElementById('disc-start-time').value;
+            const tEnd = document.getElementById('disc-end-time').value;
+            if(!dateVal || !tStart || !tEnd) return alert("Please fill all hourly fields.");
+            validFrom = new Date(`${dateVal}T${tStart}`);
+            validTo = new Date(`${dateVal}T${tEnd}`);
+            const diffMins = (validTo - validFrom) / (1000 * 60);
+            if (diffMins > (23*60 + 59)) return alert("Hourly discounts cannot exceed 23 hours 59 minutes.");
+            if (diffMins <= 0) return alert("End time must be after start time.");
+        }
+
+        let usageLimit = 1;
+        if(usageType === 'multi') {
+            usageLimit = parseInt(document.getElementById('disc-usage-limit').value);
+            if(!usageLimit || usageLimit < 1) return alert("Please enter valid usage limit.");
+        }
+
+        let targetIds = [];
+        if (scope === 'private') {
+            document.querySelectorAll('.target-user-cb:checked').forEach(cb => targetIds.push(cb.value));
+            // Only force selection on CREATE, on EDIT if list empty we assume keep previous (simplified)
+            if(!editingDiscountId && targetIds.length === 0) return alert("Please select at least one customer for private discount.");
+        }
+
+        const payload = {
+            code: code,
+            type: scope,
+            usage_type: usageType,
+            usage_limit: usageLimit,
+            valid_from: validFrom.toISOString(),
+            valid_to: validTo.toISOString(),
+            min_order_amount: minOrder,
+            status: 'active'
+        };
+
+        if(editingDiscountId) {
+            // --- UPDATE MODE ---
+            await supabaseClient.from('discounts').update(payload).eq('id', editingDiscountId);
+            // Re-insert targets if any selected during edit
+            if(scope === 'private' && targetIds.length > 0) {
+                await supabaseClient.from('discount_targets').delete().eq('discount_id', editingDiscountId);
+                const targetsPayload = targetIds.map(uid => ({ discount_id: editingDiscountId, customer_id: uid }));
+                await supabaseClient.from('discount_targets').insert(targetsPayload);
+            }
+            alert("Discount Updated Successfully!");
+        } else {
+            // --- CREATE MODE ---
+            const { data: discData, error: discError } = await supabaseClient.from('discounts').insert([payload]).select();
+            if(discError) {
+                if(discError.code === '23505') alert("Discount code already exists!");
+                else alert("Error creating discount.");
+                return;
+            }
+            const newDiscountId = discData[0].id;
+            if(scope === 'private' && targetIds.length > 0) {
+                const targetsPayload = targetIds.map(uid => ({ discount_id: newDiscountId, customer_id: uid }));
+                await supabaseClient.from('discount_targets').insert(targetsPayload);
+            }
+            alert("Discount Created Successfully!");
+        }
+
+        document.getElementById('discount-modal').style.display = 'none';
+        loadDiscounts();
+    }
+
+    window.deleteDiscount = async function(id) {
+        if(confirm("Delete this discount permanently?")) {
+            await supabaseClient.from('discounts').delete().eq('id', id);
+            loadDiscounts();
+        }
+    }
 
     // --- MODAL & CHIPS ---
     document.getElementById('profile-trigger').onclick=()=>document.getElementById('profile-modal').style.display='flex';
