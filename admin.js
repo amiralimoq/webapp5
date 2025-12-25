@@ -25,7 +25,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if(targetId === 'templates') loadCurrentTheme(); 
             if(targetId === 'reviews') loadReviews();
             if(targetId === 'messages') loadMessages();
-            if(targetId === 'discounts') loadDiscounts();
+            if(targetId === 'discounts') loadDiscounts('all');
         });
     });
 
@@ -149,9 +149,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // --- DISCOUNTS ---
     let editingDiscountId = null;
+    let reportInterval = null;
 
-    window.loadDiscounts = async function() {
-        const {data, error} = await supabaseClient.from('discounts').select('*').order('created_at', {ascending: false});
+    window.loadDiscounts = async function(filterDays = 'all') {
+        let query = supabaseClient.from('discounts').select('*').order('created_at', {ascending: false});
+        
+        if (filterDays !== 'all') {
+            const date = new Date();
+            date.setDate(date.getDate() - parseInt(filterDays));
+            query = query.gte('created_at', date.toISOString());
+        }
+
+        const {data, error} = await query;
         const container = document.getElementById('discount-list');
         container.innerHTML = '';
         if(data) {
@@ -160,13 +169,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 let isExpired = new Date(d.valid_to) < now || (d.usage_type==='multi' && d.usage_count >= d.usage_limit);
                 let statusText = d.status === 'inactive' ? 'Inactive' : (isExpired ? 'Expired' : 'Active');
                 let statusClass = (d.status === 'inactive' || isExpired) ? 'status-inactive' : 'status-active';
-                
-                // Keep 'Expired' logic visual, but if DB says 'inactive', show inactive.
                 if(d.status === 'active' && isExpired) statusText = 'Expired';
 
                 const div = document.createElement('div');
                 div.className = 'table-row';
-                // Safe JSON encode for passing to function
                 const jsonD = JSON.stringify(d).replace(/"/g, '&quot;');
                 
                 div.innerHTML = `
@@ -188,14 +194,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    // Toggle Status
     window.toggleDiscountStatus = async function(id, currentStatus) {
         const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
         await supabaseClient.from('discounts').update({ status: newStatus }).eq('id', id);
-        loadDiscounts();
+        // Refresh with current filter
+        const currentFilter = document.getElementById('discount-date-filter').value;
+        loadDiscounts(currentFilter);
     }
 
-    // View Report
     window.viewDiscountReport = function(d) {
         const modal = document.getElementById('discount-report-modal');
         const content = document.getElementById('report-content');
@@ -203,12 +209,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         let percentage = 0;
         if(d.usage_type === 'single') percentage = d.usage_count > 0 ? 100 : 0;
         else percentage = Math.min(100, Math.round((d.usage_count / d.usage_limit) * 100));
-
-        const now = new Date();
-        const end = new Date(d.valid_to);
-        const timeLeft = Math.max(0, end - now);
-        const daysLeft = Math.floor(timeLeft / (1000 * 60 * 60 * 24));
-        const hoursLeft = Math.floor((timeLeft % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
 
         content.innerHTML = `
             <div style="font-size:18px; font-weight:700; color:#333; margin-bottom:5px;">${d.code}</div>
@@ -223,15 +223,40 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <div class="report-info-row"><span>Used Count</span> <b>${d.usage_count} times</b></div>
                 <div class="report-info-row"><span>Usage Limit</span> <b>${d.usage_limit}</b></div>
                 <div class="report-info-row"><span>Min Order</span> <b>$${d.min_order_amount}</b></div>
-                <div class="report-info-row"><span>Time Left</span> <b>${daysLeft}d ${hoursLeft}h</b></div>
+                <div class="report-info-row"><span>Time Left</span> <b id="countdown-timer">Calculating...</b></div>
                 <div class="report-info-row"><span>Status</span> <b style="color:${d.status==='active'?'#2ECC71':'#FF7675'}">${d.status.toUpperCase()}</b></div>
             </div>
         `;
+        
         modal.style.display = 'flex';
+
+        // Timer Logic
+        if(reportInterval) clearInterval(reportInterval);
+        const endTime = new Date(d.valid_to).getTime();
+
+        reportInterval = setInterval(() => {
+            const now = new Date().getTime();
+            const distance = endTime - now;
+
+            if (distance < 0) {
+                document.getElementById("countdown-timer").innerHTML = "Expired";
+                clearInterval(reportInterval);
+            } else {
+                const days = Math.floor(distance / (1000 * 60 * 60 * 24));
+                const hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+                const seconds = Math.floor((distance % (1000 * 60)) / 1000);
+                document.getElementById("countdown-timer").innerHTML = `${days}d ${hours}h ${minutes}m ${seconds}s`;
+            }
+        }, 1000);
+    }
+
+    window.closeReportModal = function() {
+        if(reportInterval) clearInterval(reportInterval);
+        document.getElementById('discount-report-modal').style.display='none';
     }
 
     window.openDiscountModal = function(editData = null) {
-        // Reset Inputs
         editingDiscountId = null;
         document.getElementById('modal-title').innerText = "Create Discount Code";
         document.getElementById('save-disc-btn').innerText = "Create Discount";
@@ -240,34 +265,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('disc-min-order').value = '0';
         document.getElementById('target-users-list').innerHTML = '<div style="text-align:center; color:#aaa; font-size:12px;">Select a filter to find users</div>';
         
-        // Default Radios
         document.querySelector('input[name="disc-scope"][value="public"]').checked = true;
         document.querySelector('input[name="disc-usage"][value="single"]').checked = true;
         document.querySelector('input[name="disc-time"][value="daily"]').checked = true;
         
-        // --- EDIT MODE FILLING ---
         if(editData) {
             editingDiscountId = editData.id;
             document.getElementById('modal-title').innerText = "Edit Discount Code";
             document.getElementById('save-disc-btn').innerText = "Update Discount";
             document.getElementById('disc-code-name').value = editData.code;
             document.getElementById('disc-min-order').value = editData.min_order_amount;
-            
-            // Scope
             document.querySelector(`input[name="disc-scope"][value="${editData.type}"]`).checked = true;
-            
-            // Usage
             document.querySelector(`input[name="disc-usage"][value="${editData.usage_type}"]`).checked = true;
             if(editData.usage_type === 'multi') document.getElementById('disc-usage-limit').value = editData.usage_limit;
 
-            // Time & Dates
             const start = new Date(editData.valid_from);
             const end = new Date(editData.valid_to);
             const diffHours = (end - start) / (1000 * 60 * 60);
 
             if(diffHours <= 24 && diffHours > 0) {
                 document.querySelector('input[name="disc-time"][value="hourly"]').checked = true;
-                // Format for Date/Time inputs
                 document.getElementById('disc-hour-date').value = start.toISOString().split('T')[0];
                 document.getElementById('disc-start-time').value = start.toTimeString().slice(0,5);
                 document.getElementById('disc-end-time').value = end.toTimeString().slice(0,5);
@@ -278,11 +295,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         
-        // UI Refresh
         toggleDiscScope();
         toggleUsageInput();
         toggleTimeInputs();
-        
         document.getElementById('discount-modal').style.display = 'flex';
     }
 
@@ -305,7 +320,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.updateFilterInputs = function() {
         const type = document.getElementById('disc-filter-type').value;
         const inputContainer = document.getElementById('filter-input-container');
-        inputContainer.style.display = (type === 'name' || type === 'phone' || type === 'spender') ? 'block' : 'none';
+        // Show input only if type is NOT inactive (inactive doesn't need input)
+        inputContainer.style.display = (type !== 'none' && type !== 'inactive') ? 'block' : 'none';
         document.getElementById('disc-filter-val').value = '';
     }
 
@@ -329,8 +345,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         } else if (filterType === 'name') {
             customers = allCusts.filter(c => c.name.toLowerCase().includes(filterVal));
-        } else if (filterType === 'phone') {
-            customers = allCusts.filter(c => c.phone && (c.phone.startsWith(filterVal) || c.phone.endsWith(filterVal)));
+        } else if (filterType === 'phone_start') { // First 4 digits
+            customers = allCusts.filter(c => c.phone && c.phone.startsWith(filterVal));
+        } else if (filterType === 'phone_end') { // Last 3 digits
+            customers = allCusts.filter(c => c.phone && c.phone.endsWith(filterVal));
         } else if (filterType === 'spender') {
             const minAmount = parseFloat(filterVal);
             if(isNaN(minAmount)) { alert("Please enter a valid amount"); return; }
@@ -397,7 +415,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         let targetIds = [];
         if (scope === 'private') {
             document.querySelectorAll('.target-user-cb:checked').forEach(cb => targetIds.push(cb.value));
-            // Only force selection on CREATE, on EDIT if list empty we assume keep previous (simplified)
             if(!editingDiscountId && targetIds.length === 0) return alert("Please select at least one customer for private discount.");
         }
 
@@ -413,9 +430,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
 
         if(editingDiscountId) {
-            // --- UPDATE MODE ---
             await supabaseClient.from('discounts').update(payload).eq('id', editingDiscountId);
-            // Re-insert targets if any selected during edit
             if(scope === 'private' && targetIds.length > 0) {
                 await supabaseClient.from('discount_targets').delete().eq('discount_id', editingDiscountId);
                 const targetsPayload = targetIds.map(uid => ({ discount_id: editingDiscountId, customer_id: uid }));
@@ -423,7 +438,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             alert("Discount Updated Successfully!");
         } else {
-            // --- CREATE MODE ---
             const { data: discData, error: discError } = await supabaseClient.from('discounts').insert([payload]).select();
             if(discError) {
                 if(discError.code === '23505') alert("Discount code already exists!");
@@ -439,13 +453,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         document.getElementById('discount-modal').style.display = 'none';
-        loadDiscounts();
+        const currentFilter = document.getElementById('discount-date-filter').value;
+        loadDiscounts(currentFilter);
     }
 
     window.deleteDiscount = async function(id) {
         if(confirm("Delete this discount permanently?")) {
             await supabaseClient.from('discounts').delete().eq('id', id);
-            loadDiscounts();
+            const currentFilter = document.getElementById('discount-date-filter').value;
+            loadDiscounts(currentFilter);
         }
     }
 
