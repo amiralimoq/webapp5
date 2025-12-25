@@ -25,7 +25,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if(targetId === 'templates') loadCurrentTheme(); 
             if(targetId === 'reviews') loadReviews();
             if(targetId === 'messages') loadMessages();
-            if(targetId === 'discounts') loadDiscounts('all');
+            if(targetId === 'discounts') loadDiscounts();
         });
     });
 
@@ -151,55 +151,132 @@ document.addEventListener('DOMContentLoaded', async () => {
     let editingDiscountId = null;
     let reportInterval = null;
 
-    window.loadDiscounts = async function(filterDays = 'all') {
-        let query = supabaseClient.from('discounts').select('*').order('created_at', {ascending: false});
-        
-        if (filterDays !== 'all') {
-            const date = new Date();
-            date.setDate(date.getDate() - parseInt(filterDays));
-            query = query.gte('created_at', date.toISOString());
-        }
+    // Filter State
+    let discountFilters = {
+        category: 'all',
+        dateStart: null,
+        dateEnd: null,
+        amount: null,
+        amountOp: 'gt'
+    };
 
-        const {data, error} = await query;
+    window.filterDiscounts = function(cat, el) {
+        document.querySelectorAll('#discount-status-filters .pill-tab').forEach(t => t.classList.remove('active-tab'));
+        el.classList.add('active-tab');
+        discountFilters.category = cat;
+        loadDiscounts();
+    }
+
+    window.applyAdvancedFilters = function() {
+        discountFilters.dateStart = document.getElementById('filter-date-start').value;
+        discountFilters.dateEnd = document.getElementById('filter-date-end').value;
+        discountFilters.amount = document.getElementById('filter-amount').value;
+        discountFilters.amountOp = document.getElementById('filter-amount-op').value;
+        loadDiscounts();
+    }
+
+    window.resetAdvancedFilters = function() {
+        document.getElementById('filter-date-start').value = '';
+        document.getElementById('filter-date-end').value = '';
+        document.getElementById('filter-amount').value = '';
+        discountFilters.dateStart = null;
+        discountFilters.dateEnd = null;
+        discountFilters.amount = null;
+        loadDiscounts();
+    }
+
+    window.loadDiscounts = async function() {
+        // Fetch ALL then filter client-side for simplicity (Supabase logic mixing status/dates is complex in raw JS)
+        let {data, error} = await supabaseClient.from('discounts').select('*').order('created_at', {ascending: false});
+        
+        if(!data) return;
+
         const container = document.getElementById('discount-list');
         container.innerHTML = '';
-        if(data) {
-            data.forEach(d => {
-                const now = new Date();
-                let isExpired = new Date(d.valid_to) < now || (d.usage_type==='multi' && d.usage_count >= d.usage_limit);
-                let statusText = d.status === 'inactive' ? 'Inactive' : (isExpired ? 'Expired' : 'Active');
-                let statusClass = (d.status === 'inactive' || isExpired) ? 'status-inactive' : 'status-active';
-                if(d.status === 'active' && isExpired) statusText = 'Expired';
+        const now = new Date();
 
-                const div = document.createElement('div');
-                div.className = 'table-row';
-                const jsonD = JSON.stringify(d).replace(/"/g, '&quot;');
-                
-                div.innerHTML = `
-                    <span style="flex:2; font-weight:600;">${d.code}</span>
-                    <span style="flex:1; font-size:12px;">${d.type.toUpperCase()}</span>
-                    <span style="flex:1; font-size:12px;">${d.usage_type === 'single' ? 'Single' : d.usage_count + '/' + d.usage_limit}</span>
-                    <span style="flex:1; font-size:12px;">$${d.min_order_amount}</span>
-                    <span style="flex:1;">
-                        <span class="badge-status ${statusClass}" onclick="toggleDiscountStatus(${d.id}, '${d.status}')">${statusText}</span>
-                    </span>
-                    <span style="flex:1; text-align:right; display:flex; justify-content:flex-end; gap:10px;">
-                         <button onclick="viewDiscountReport(${jsonD})" style="background:none; border:none; color:#3498DB; cursor:pointer;" title="Report"><i class="ri-eye-line"></i></button>
-                         <button onclick="openDiscountModal(${jsonD})" style="background:none; border:none; color:#F39C12; cursor:pointer;" title="Edit"><i class="ri-pencil-line"></i></button>
-                         <button onclick="deleteDiscount(${d.id})" style="background:none; border:none; color:#FF7675; cursor:pointer;" title="Delete"><i class="ri-delete-bin-line"></i></button>
-                    </span>
-                `;
-                container.appendChild(div);
-            });
+        // CLIENT SIDE FILTERING
+        const filteredData = data.filter(d => {
+            const isExpired = new Date(d.valid_to) < now;
+            const isCanceled = d.status === 'inactive';
+            
+            // 1. Category Filter
+            if (discountFilters.category === 'active') {
+                if (isExpired || isCanceled) return false;
+            }
+            if (discountFilters.category === 'expired') {
+                if (!isExpired || isCanceled) return false;
+            }
+            if (discountFilters.category === 'inactive') {
+                if (!isCanceled) return false;
+            }
+            if (discountFilters.category === 'single') if (d.usage_type !== 'single') return false;
+            if (discountFilters.category === 'multi') if (d.usage_type !== 'multi') return false;
+            if (discountFilters.category === 'public') if (d.type !== 'public') return false;
+            if (discountFilters.category === 'private') if (d.type !== 'private') return false;
+
+            // 2. Date Range Filter
+            if (discountFilters.dateStart) {
+                if (new Date(d.created_at) < new Date(discountFilters.dateStart)) return false;
+            }
+            if (discountFilters.dateEnd) {
+                // Add 1 day to include the end date fully
+                let endDate = new Date(discountFilters.dateEnd);
+                endDate.setDate(endDate.getDate() + 1);
+                if (new Date(d.created_at) >= endDate) return false;
+            }
+
+            // 3. Amount Filter
+            if (discountFilters.amount) {
+                const val = parseFloat(discountFilters.amount);
+                if (discountFilters.amountOp === 'gt') {
+                    if (d.min_order_amount <= val) return false;
+                } else {
+                    if (d.min_order_amount >= val) return false;
+                }
+            }
+
+            return true;
+        });
+
+        if(filteredData.length === 0) {
+            container.innerHTML = '<div style="padding:15px; color:#888;">No discounts found.</div>';
+            return;
         }
+
+        filteredData.forEach(d => {
+            let isExpired = new Date(d.valid_to) < now;
+            let statusText = d.status === 'inactive' ? 'Canceled' : (isExpired ? 'Expired' : 'Active');
+            let statusClass = (d.status === 'inactive' || isExpired) ? 'status-inactive' : 'status-active';
+            
+            if(d.status === 'active' && isExpired) statusText = 'Expired';
+
+            const div = document.createElement('div');
+            div.className = 'table-row';
+            const jsonD = JSON.stringify(d).replace(/"/g, '&quot;');
+            
+            div.innerHTML = `
+                <span style="flex:2; font-weight:600;">${d.code}</span>
+                <span style="flex:1; font-size:12px;">${d.type.toUpperCase()}</span>
+                <span style="flex:1; font-size:12px;">${d.usage_type === 'single' ? 'Single Use' : 'Multi Use'}</span>
+                <span style="flex:1; font-size:12px;">$${d.min_order_amount}</span>
+                <span style="flex:1;">
+                    <span class="badge-status ${statusClass}" onclick="toggleDiscountStatus(${d.id}, '${d.status}')">${statusText}</span>
+                </span>
+                <span style="flex:1; text-align:right; display:flex; justify-content:flex-end; gap:10px;">
+                        <button onclick="viewDiscountReport(${jsonD})" style="background:none; border:none; color:#3498DB; cursor:pointer;" title="Report"><i class="ri-eye-line"></i></button>
+                        <button onclick="openDiscountModal(${jsonD})" style="background:none; border:none; color:#F39C12; cursor:pointer;" title="Edit"><i class="ri-pencil-line"></i></button>
+                        <button onclick="deleteDiscount(${d.id})" style="background:none; border:none; color:#FF7675; cursor:pointer;" title="Delete"><i class="ri-delete-bin-line"></i></button>
+                </span>
+            `;
+            container.appendChild(div);
+        });
     }
 
     window.toggleDiscountStatus = async function(id, currentStatus) {
         const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
         await supabaseClient.from('discounts').update({ status: newStatus }).eq('id', id);
-        // Refresh with current filter
-        const currentFilter = document.getElementById('discount-date-filter').value;
-        loadDiscounts(currentFilter);
+        loadDiscounts();
     }
 
     window.viewDiscountReport = function(d) {
@@ -207,8 +284,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         const content = document.getElementById('report-content');
         
         let percentage = 0;
-        if(d.usage_type === 'single') percentage = d.usage_count > 0 ? 100 : 0;
-        else percentage = Math.min(100, Math.round((d.usage_count / d.usage_limit) * 100));
+        // In the new logic, global usage vs limit is not the main metric, but we show what we have.
+        // We can show time elapsed percentage instead? 
+        // Or just keep usage if applicable. Let's show Time Elapsed since start.
+        const now = new Date().getTime();
+        const start = new Date(d.valid_from).getTime();
+        const end = new Date(d.valid_to).getTime();
+        const totalDuration = end - start;
+        const elapsed = now - start;
+        percentage = Math.min(100, Math.max(0, Math.round((elapsed / totalDuration) * 100)));
 
         content.innerHTML = `
             <div style="font-size:18px; font-weight:700; color:#333; margin-bottom:5px;">${d.code}</div>
@@ -217,11 +301,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             <div class="report-circle" style="background: conic-gradient(${percentage < 100 ? '#FF724C' : '#aaa'} ${percentage}%, #eee 0% 100%);">
                 <span class="report-val">${percentage}%</span>
             </div>
-            <div style="font-size:12px; color:#555; margin-bottom:20px;">Usage Filled</div>
+            <div style="font-size:12px; color:#555; margin-bottom:20px;">Time Elapsed</div>
 
             <div class="clean-table" style="padding:15px; text-align:left;">
-                <div class="report-info-row"><span>Used Count</span> <b>${d.usage_count} times</b></div>
-                <div class="report-info-row"><span>Usage Limit</span> <b>${d.usage_limit}</b></div>
+                <div class="report-info-row"><span>Total Global Uses</span> <b>${d.usage_count}</b></div>
+                <div class="report-info-row"><span>User Limit</span> <b>${d.usage_type === 'single' ? '1 per user' : d.usage_limit + ' per user'}</b></div>
                 <div class="report-info-row"><span>Min Order</span> <b>$${d.min_order_amount}</b></div>
                 <div class="report-info-row"><span>Time Left</span> <b id="countdown-timer">Calculating...</b></div>
                 <div class="report-info-row"><span>Status</span> <b style="color:${d.status==='active'?'#2ECC71':'#FF7675'}">${d.status.toUpperCase()}</b></div>
@@ -234,7 +318,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if(reportInterval) clearInterval(reportInterval);
         const endTime = new Date(d.valid_to).getTime();
 
-        reportInterval = setInterval(() => {
+        const updateTimer = () => {
             const now = new Date().getTime();
             const distance = endTime - now;
 
@@ -248,13 +332,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const seconds = Math.floor((distance % (1000 * 60)) / 1000);
                 document.getElementById("countdown-timer").innerHTML = `${days}d ${hours}h ${minutes}m ${seconds}s`;
             }
-        }, 1000);
+        };
+        updateTimer();
+        reportInterval = setInterval(updateTimer, 1000);
     }
 
     window.closeReportModal = function() {
         if(reportInterval) clearInterval(reportInterval);
         document.getElementById('discount-report-modal').style.display='none';
     }
+
+    // Close Modal when clicking outside
+    document.getElementById('discount-modal').addEventListener('click', function(e) {
+        if (e.target === this) this.style.display = 'none';
+    });
+    document.getElementById('discount-report-modal').addEventListener('click', function(e) {
+        if (e.target === this) closeReportModal();
+    });
 
     window.openDiscountModal = function(editData = null) {
         editingDiscountId = null;
@@ -293,6 +387,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 document.getElementById('disc-start-date').value = start.toISOString().split('T')[0];
                 document.getElementById('disc-end-date').value = end.toISOString().split('T')[0];
             }
+        } else {
+            // Defaults for New
+            const today = new Date().toISOString().split('T')[0];
+            const nowTime = new Date().toTimeString().slice(0,5);
+            
+            document.getElementById('disc-start-date').value = today;
+            document.getElementById('disc-hour-date').value = today;
+            document.getElementById('disc-start-time').value = nowTime;
+            document.getElementById('disc-end-time').value = "12:00";
         }
         
         toggleDiscScope();
@@ -320,7 +423,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.updateFilterInputs = function() {
         const type = document.getElementById('disc-filter-type').value;
         const inputContainer = document.getElementById('filter-input-container');
-        // Show input only if type is NOT inactive (inactive doesn't need input)
         inputContainer.style.display = (type !== 'none' && type !== 'inactive') ? 'block' : 'none';
         document.getElementById('disc-filter-val').value = '';
     }
@@ -345,9 +447,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         } else if (filterType === 'name') {
             customers = allCusts.filter(c => c.name.toLowerCase().includes(filterVal));
-        } else if (filterType === 'phone_start') { // First 4 digits
+        } else if (filterType === 'phone_start') {
             customers = allCusts.filter(c => c.phone && c.phone.startsWith(filterVal));
-        } else if (filterType === 'phone_end') { // Last 3 digits
+        } else if (filterType === 'phone_end') {
             customers = allCusts.filter(c => c.phone && c.phone.endsWith(filterVal));
         } else if (filterType === 'spender') {
             const minAmount = parseFloat(filterVal);
@@ -406,7 +508,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (diffMins <= 0) return alert("End time must be after start time.");
         }
 
-        let usageLimit = 1;
+        // Logic Change: Single Use means "1 per user", Multi means "N per user"
+        // We set usage_limit accordingly.
+        let usageLimit = 1; 
         if(usageType === 'multi') {
             usageLimit = parseInt(document.getElementById('disc-usage-limit').value);
             if(!usageLimit || usageLimit < 1) return alert("Please enter valid usage limit.");
@@ -453,15 +557,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         document.getElementById('discount-modal').style.display = 'none';
-        const currentFilter = document.getElementById('discount-date-filter').value;
-        loadDiscounts(currentFilter);
+        loadDiscounts();
     }
 
     window.deleteDiscount = async function(id) {
         if(confirm("Delete this discount permanently?")) {
             await supabaseClient.from('discounts').delete().eq('id', id);
-            const currentFilter = document.getElementById('discount-date-filter').value;
-            loadDiscounts(currentFilter);
+            loadDiscounts();
         }
     }
 
