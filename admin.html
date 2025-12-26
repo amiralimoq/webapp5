@@ -170,9 +170,10 @@
         
         .badge-status { 
             padding: 4px 10px; border-radius: 6px; font-size: 11px; 
-            font-weight: 600; cursor: pointer; transition:0.2s; 
+            font-weight: 600; transition:0.2s; 
+            /* Cursor default as requested */
+            cursor: default; 
         }
-        .badge-status:hover { opacity: 0.8; transform:scale(1.05); }
         .status-active { background: #E9FBF0; color: #2ECC71; }
         .status-inactive { background: #FFF0F0; color: #FF7675; }
 
@@ -370,7 +371,7 @@
                     </button>
                 </div>
 
-                <!-- NEW DROPDOWN PILLS FOR FILTERS -->
+                <!-- DROPDOWN PILLS FOR FILTERS -->
                 <div class="pill-tabs" id="discount-filters-container">
                     <!-- Reset Button -->
                     <div class="pill-tab active-tab" onclick="resetAllDiscountFilters(this)" id="btn-all-discounts">
@@ -402,10 +403,10 @@
                         </div>
                     </div>
 
-                    <!-- Scope Dropdown -->
+                    <!-- Type Dropdown (Renamed from Scope) -->
                     <div class="pill-dropdown" id="dd-scope">
                         <div class="pill-tab" onclick="togglePillMenu('scope')">
-                            <span id="label-scope">Scope: All</span> <i class="ri-arrow-down-s-line"></i>
+                            <span id="label-scope">Type: All</span> <i class="ri-arrow-down-s-line"></i>
                         </div>
                         <div class="pill-menu" id="menu-scope">
                             <div class="pill-option selected" onclick="setDiscountFilter('scope', 'all', 'All')">All</div>
@@ -416,7 +417,7 @@
                 </div>
 
                 <div class="clean-table">
-                    <!-- BEAUTIFIED FILTER BAR -->
+                    <!-- FILTER BAR -->
                     <div class="filter-bar">
                         <div class="filter-group">
                             <span class="filter-label">Date Range</span>
@@ -459,7 +460,7 @@
                         <span class="header-item" style="flex:1">Type</span>
                         <span class="header-item" style="flex:1">Usage Mode</span>
                         <span class="header-item" style="flex:1">Min Order</span>
-                        <span class="header-item" style="flex:1">Status (Click to toggle)</span>
+                        <span class="header-item" style="flex:1">Status</span>
                         <span class="header-item" style="flex:1; text-align: right;">Actions</span>
                     </div>
                     <div id="discount-list">
@@ -626,15 +627,21 @@
             <i class="ri-close-line modal-close-icon" onclick="document.getElementById('discount-modal').style.display='none'"></i>
             <h3 id="modal-title" style="margin-bottom: 20px;">Create Discount Code</h3>
             
-            <!-- Step 1: Code Name -->
+            <!-- Step 1: Percentage (NEW) -->
             <div class="step-section">
-                <div class="step-title">1. Discount Code Name</div>
+                <div class="step-title">1. Discount Percentage (%)</div>
+                <input type="number" id="disc-percent" class="form-control" placeholder="e.g. 15" style="margin-bottom:5px;">
+            </div>
+
+            <!-- Step 2: Code Name -->
+            <div class="step-section">
+                <div class="step-title">2. Discount Code Name</div>
                 <input type="text" id="disc-code-name" class="form-control" placeholder="SUMMER2024" style="margin-bottom:5px;">
             </div>
 
-            <!-- Step 2: Discount Scope -->
+            <!-- Step 3: Discount Scope -->
             <div class="step-section">
-                <div class="step-title">2. Discount Scope</div>
+                <div class="step-title">3. Discount Type (Scope)</div>
                 <div class="radio-group">
                     <label class="radio-label"><input type="radio" name="disc-scope" value="public" checked onchange="toggleDiscScope()"> Public (Everyone)</label>
                     <label class="radio-label"><input type="radio" name="disc-scope" value="private" onchange="toggleDiscScope()"> Private (Specific Users)</label>
@@ -660,9 +667,9 @@
                 </div>
             </div>
 
-            <!-- Step 3: Usage Limits -->
+            <!-- Step 4: Usage Limits -->
             <div class="step-section">
-                <div class="step-title">3. Usage Type</div>
+                <div class="step-title">4. Usage Type</div>
                 <div class="radio-group">
                     <label class="radio-label"><input type="radio" name="disc-usage" value="single" checked onchange="toggleUsageInput()"> Single Use</label>
                     <label class="radio-label"><input type="radio" name="disc-usage" value="multi" onchange="toggleUsageInput()"> Multi Use</label>
@@ -670,12 +677,12 @@
                 <input type="number" id="disc-usage-limit" class="form-control" placeholder="Max usage count per user" style="display:none; margin-top:10px;">
             </div>
 
-            <!-- Step 4: Duration -->
+            <!-- Step 5: Duration -->
             <div class="step-section">
-                <div class="step-title">4. Duration & Limits</div>
+                <div class="step-title">5. Duration & Limits</div>
                 <div class="radio-group">
-                    <label class="radio-label"><input type="radio" name="disc-time" value="daily" checked onchange="toggleTimeInputs()"> Daily (Max 30 Days)</label>
-                    <label class="radio-label"><input type="radio" name="disc-time" value="hourly" onchange="toggleTimeInputs()"> Hourly (Max 24 Hours)</label>
+                    <label class="radio-label"><input type="radio" name="disc-time" value="daily" checked onchange="toggleTimeInputs()"> Daily (Unlimited)</label>
+                    <label class="radio-label"><input type="radio" name="disc-time" value="hourly" onchange="toggleTimeInputs()"> Hourly (Precise Time)</label>
                 </div>
 
                 <div id="time-daily" style="margin-top:10px;">
@@ -694,12 +701,18 @@
                 <div id="time-hourly" style="margin-top:10px; display:none;">
                     <div class="date-input-group">
                         <div class="date-field">
-                            <label>Select Date</label>
-                            <input type="date" id="disc-hour-date" class="form-control">
+                            <label>Start Date</label>
+                            <input type="date" id="disc-hourly-start-date" class="form-control">
                         </div>
                         <div class="date-field">
                             <label>Start Time</label>
                             <input type="time" id="disc-start-time" class="form-control">
+                        </div>
+                    </div>
+                    <div class="date-input-group" style="margin-top:10px;">
+                        <div class="date-field">
+                            <label>End Date</label>
+                            <input type="date" id="disc-hourly-end-date" class="form-control">
                         </div>
                         <div class="date-field">
                             <label>End Time</label>
@@ -711,6 +724,15 @@
                 <div style="margin-top:15px;">
                     <label style="font-size:12px; color:#888; margin-bottom: 5px; font-weight: 600; display:block;">Min Order Amount ($):</label>
                     <input type="number" id="disc-min-order" class="form-control" placeholder="0" value="0">
+                </div>
+            </div>
+
+            <!-- Step 6: Status (Moved Here) -->
+            <div class="step-section" id="status-section">
+                <div class="step-title">6. Status</div>
+                <div class="radio-group">
+                    <label class="radio-label"><input type="radio" name="disc-status" value="active" checked> Active</label>
+                    <label class="radio-label"><input type="radio" name="disc-status" value="inactive"> Inactive</label>
                 </div>
             </div>
 
