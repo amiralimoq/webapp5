@@ -240,20 +240,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             const isInactive = d.status === 'inactive';
             const isActive = !isExpired && !isInactive;
 
-            // 1. Status Filter
             if (discountFilters.status === 'active' && !isActive) return false;
             if (discountFilters.status === 'inactive' && !isInactive) return false;
             if (discountFilters.status === 'expired' && (!isExpired || isInactive)) return false;
 
-            // 2. Usage Filter
             if (discountFilters.usage === 'single' && d.usage_type !== 'single') return false;
             if (discountFilters.usage === 'multi' && d.usage_type !== 'multi') return false;
 
-            // 3. Scope Filter
             if (discountFilters.scope === 'public' && d.type !== 'public') return false;
             if (discountFilters.scope === 'private' && d.type !== 'private') return false;
 
-            // 4. Date Range Filter
             if (discountFilters.dateStart) {
                 if (new Date(d.created_at) < new Date(discountFilters.dateStart)) return false;
             }
@@ -263,7 +259,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (new Date(d.created_at) >= endDate) return false;
             }
 
-            // 5. Amount Filter
             if (discountFilters.amount) {
                 const val = parseFloat(discountFilters.amount);
                 if (discountFilters.amountOp === 'gt') {
@@ -272,7 +267,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (d.min_order_amount >= val) return false;
                 }
             }
-
             return true;
         });
 
@@ -298,7 +292,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <span style="flex:1; font-size:12px;">${d.usage_type === 'single' ? 'Single Use' : 'Multi Use'}</span>
                 <span style="flex:1; font-size:12px;">$${d.min_order_amount}</span>
                 <span style="flex:1;">
-                    <span class="badge-status ${statusClass}" onclick="toggleDiscountStatus(${d.id}, '${d.status}')">${statusText}</span>
+                    <span class="badge-status ${statusClass}" style="cursor: default;">${statusText}</span>
                 </span>
                 <span style="flex:1; text-align:right; display:flex; justify-content:flex-end; gap:10px;">
                         <button onclick="viewDiscountReport(${jsonD})" style="background:none; border:none; color:#3498DB; cursor:pointer;" title="Report"><i class="ri-eye-line"></i></button>
@@ -308,12 +302,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             `;
             container.appendChild(div);
         });
-    }
-
-    window.toggleDiscountStatus = async function(id, currentStatus) {
-        const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
-        await supabaseClient.from('discounts').update({ status: newStatus }).eq('id', id);
-        loadDiscounts();
     }
 
     // --- ASYNC REPORT WITH TARGET COUNTING ---
@@ -336,8 +324,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         let subLabel = "Total Uses";
 
         if (d.type === 'private') {
-            // For private codes, calculate: Total Uses / Number of Targeted Users
-            // Fetch target count first
             content.innerHTML = '<p>Loading report data...</p>';
             modal.style.display = 'flex';
             
@@ -349,11 +335,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             const targetCount = count || 0;
             
             if (targetCount > 0) {
-                // If usage_limit (per user) is > 1, total potential uses = targetCount * usage_limit
-                // But user asked for "Percentage of users who used it". 
-                // Since we don't track unique users easily without extra queries, we'll approximate:
-                // If it's single use, Usage Count / Target Count is accurate.
-                // If it's multi use, Usage Count could exceed Target Count. We'll cap at 100% or just show ratio.
                 usagePerc = Math.min(100, Math.round((d.usage_count / targetCount) * 100));
                 usageLabel = `${d.usage_count} / ${targetCount}`;
                 subLabel = "Used / Targets";
@@ -364,9 +345,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else {
             // Public Code
             if (d.usage_limit && d.usage_limit > 0 && d.usage_type === 'multi') {
-                // Not very meaningful for public unless we have a global limit, which we don't in DB schema.
-                // So we just show 100% if active, or maybe 0.
-                // Let's keep it simple: Public codes just show count.
                 usagePerc = 100; 
                 usageLabel = `${d.usage_count}`;
                 subLabel = "Public Uses";
@@ -456,51 +434,63 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    // (Create/Edit/Save functions remain mostly the same)
     window.openDiscountModal = function(editData = null) {
         editingDiscountId = null;
         document.getElementById('modal-title').innerText = "Create Discount Code";
         document.getElementById('save-disc-btn').innerText = "Create Discount";
+        
+        // Reset Inputs
+        document.getElementById('disc-percent').value = ''; 
         document.getElementById('disc-code-name').value = '';
         document.getElementById('disc-usage-limit').value = '';
         document.getElementById('disc-min-order').value = '0';
         document.getElementById('target-users-list').innerHTML = '<div style="text-align:center; color:#aaa; font-size:12px;">Select a filter to find users</div>';
         
+        // Default Radios
         document.querySelector('input[name="disc-scope"][value="public"]').checked = true;
         document.querySelector('input[name="disc-usage"][value="single"]').checked = true;
         document.querySelector('input[name="disc-time"][value="daily"]').checked = true;
-        
+        document.querySelector('input[name="disc-status"][value="active"]').checked = true; 
+
         if(editData) {
             editingDiscountId = editData.id;
             document.getElementById('modal-title').innerText = "Edit Discount Code";
             document.getElementById('save-disc-btn').innerText = "Update Discount";
+            
+            // Fill Inputs
+            document.getElementById('disc-percent').value = editData.percentage || ''; 
             document.getElementById('disc-code-name').value = editData.code;
             document.getElementById('disc-min-order').value = editData.min_order_amount;
+            
+            // Radios
             document.querySelector(`input[name="disc-scope"][value="${editData.type}"]`).checked = true;
             document.querySelector(`input[name="disc-usage"][value="${editData.usage_type}"]`).checked = true;
+            document.querySelector(`input[name="disc-status"][value="${editData.status}"]`).checked = true; 
+            
             if(editData.usage_type === 'multi') document.getElementById('disc-usage-limit').value = editData.usage_limit;
 
             const start = new Date(editData.valid_from);
             const end = new Date(editData.valid_to);
-            const diffHours = (end - start) / (1000 * 60 * 60);
-
-            if(diffHours <= 24 && diffHours > 0) {
-                document.querySelector('input[name="disc-time"][value="hourly"]').checked = true;
-                document.getElementById('disc-hour-date').value = start.toISOString().split('T')[0];
-                document.getElementById('disc-start-time').value = start.toTimeString().slice(0,5);
-                document.getElementById('disc-end-time').value = end.toTimeString().slice(0,5);
-            } else {
-                document.querySelector('input[name="disc-time"][value="daily"]').checked = true;
-                document.getElementById('disc-start-date').value = start.toISOString().split('T')[0];
-                document.getElementById('disc-end-date').value = end.toISOString().split('T')[0];
-            }
+            
+            document.getElementById('disc-start-date').value = start.toISOString().split('T')[0];
+            document.getElementById('disc-end-date').value = end.toISOString().split('T')[0];
+            
+            // Populate hourly fields
+            document.getElementById('disc-hourly-start-date').value = start.toISOString().split('T')[0];
+            document.getElementById('disc-start-time').value = start.toTimeString().slice(0,5);
+            document.getElementById('disc-hourly-end-date').value = end.toISOString().split('T')[0];
+            document.getElementById('disc-end-time').value = end.toTimeString().slice(0,5);
         } else {
             const today = new Date().toISOString().split('T')[0];
             const nowTime = new Date().toTimeString().slice(0,5);
+            
             document.getElementById('disc-start-date').value = today;
-            document.getElementById('disc-hour-date').value = today;
+            document.getElementById('disc-end-date').value = today;
+            
+            document.getElementById('disc-hourly-start-date').value = today;
+            document.getElementById('disc-hourly-end-date').value = today;
             document.getElementById('disc-start-time').value = nowTime;
-            document.getElementById('disc-end-time').value = "12:00";
+            document.getElementById('disc-end-time').value = "23:59";
         }
         toggleDiscScope(); toggleUsageInput(); toggleTimeInputs();
         document.getElementById('discount-modal').style.display = 'flex';
@@ -562,23 +552,35 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     window.saveDiscount = async function() {
+        const percentage = parseFloat(document.getElementById('disc-percent').value);
         const code = document.getElementById('disc-code-name').value.trim();
         const scope = document.querySelector('input[name="disc-scope"]:checked').value;
         const usageType = document.querySelector('input[name="disc-usage"]:checked').value;
         const timeType = document.querySelector('input[name="disc-time"]:checked').value;
+        const status = document.querySelector('input[name="disc-status"]:checked').value;
         const minOrder = parseFloat(document.getElementById('disc-min-order').value) || 0;
+        
+        if (!percentage) return alert("Enter Discount Percentage.");
         if (!code) return alert("Enter Code Name.");
         
         let validFrom, validTo;
         if (timeType === 'daily') {
-            const dStart = document.getElementById('disc-start-date').value; const dEnd = document.getElementById('disc-end-date').value;
+            const dStart = document.getElementById('disc-start-date').value; 
+            const dEnd = document.getElementById('disc-end-date').value;
             if(!dStart || !dEnd) return alert("Select dates.");
-            validFrom = new Date(dStart); validTo = new Date(dEnd);
-            if ((validTo - validFrom) / (1000 * 60 * 60 * 24) > 30) return alert("Max 30 days.");
+            validFrom = new Date(dStart); 
+            validTo = new Date(dEnd);
         } else {
-            const dateVal = document.getElementById('disc-hour-date').value; const tStart = document.getElementById('disc-start-time').value; const tEnd = document.getElementById('disc-end-time').value;
-            if(!dateVal || !tStart || !tEnd) return alert("Fill hourly fields.");
-            validFrom = new Date(`${dateVal}T${tStart}`); validTo = new Date(`${dateVal}T${tEnd}`);
+            const dStart = document.getElementById('disc-hourly-start-date').value;
+            const tStart = document.getElementById('disc-start-time').value; 
+            const dEnd = document.getElementById('disc-hourly-end-date').value;
+            const tEnd = document.getElementById('disc-end-time').value;
+            
+            if(!dStart || !tStart || !dEnd || !tEnd) return alert("Fill all hourly fields.");
+            validFrom = new Date(`${dStart}T${tStart}`); 
+            validTo = new Date(`${dEnd}T${tEnd}`);
+            
+            if(validTo <= validFrom) return alert("End time must be after Start time.");
         }
 
         let usageLimit = 1; 
@@ -593,7 +595,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             if(!editingDiscountId && targetIds.length === 0) return alert("Select at least one customer.");
         }
 
-        const payload = { code, type: scope, usage_type: usageType, usage_limit: usageLimit, valid_from: validFrom.toISOString(), valid_to: validTo.toISOString(), min_order_amount: minOrder, status: 'active' };
+        const payload = { 
+            percentage: percentage,
+            code, 
+            type: scope, 
+            usage_type: usageType, 
+            usage_limit: usageLimit, 
+            valid_from: validFrom.toISOString(), 
+            valid_to: validTo.toISOString(), 
+            min_order_amount: minOrder, 
+            status: status 
+        };
 
         if(editingDiscountId) {
             await supabaseClient.from('discounts').update(payload).eq('id', editingDiscountId);
@@ -604,7 +616,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             alert("Updated!");
         } else {
             const { data: discData, error: discError } = await supabaseClient.from('discounts').insert([payload]).select();
-            if(discError) return alert("Error/Code exists.");
+            if(discError) {
+                console.error(discError);
+                return alert("Error creating discount (Check DB columns/Code unique).");
+            }
             const newDiscountId = discData[0].id;
             if(scope === 'private' && targetIds.length > 0) await supabaseClient.from('discount_targets').insert(targetIds.map(uid => ({ discount_id: newDiscountId, customer_id: uid })));
             alert("Created!");
