@@ -153,17 +153,58 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Filter State
     let discountFilters = {
-        category: 'all',
+        status: 'all', // all, active, inactive, expired
+        usage: 'all',  // all, single, multi
+        scope: 'all',  // all, public, private
         dateStart: null,
         dateEnd: null,
         amount: null,
         amountOp: 'gt'
     };
 
-    window.filterDiscounts = function(cat, el) {
-        document.querySelectorAll('#discount-status-filters .pill-tab').forEach(t => t.classList.remove('active-tab'));
+    // --- DROPDOWN LOGIC ---
+    window.togglePillMenu = function(id) {
+        document.querySelectorAll('.pill-menu').forEach(m => {
+            if(m.id !== 'menu-'+id) m.classList.remove('show');
+        });
+        document.getElementById('menu-'+id).classList.toggle('show');
+    }
+
+    // Set Filter from Dropdown
+    window.setDiscountFilter = function(type, value, label) {
+        discountFilters[type] = value;
+        document.getElementById(`label-${type}`).innerText = `${type.charAt(0).toUpperCase() + type.slice(1)}: ${label}`;
+        document.getElementById(`menu-${type}`).classList.remove('show');
+        
+        // Handle visual selection
+        document.querySelectorAll(`#menu-${type} .pill-option`).forEach(opt => {
+            if(opt.innerText === label) opt.classList.add('selected');
+            else opt.classList.remove('selected');
+        });
+
+        // Ensure "All" button is inactive if filters are active
+        const btnAll = document.getElementById('btn-all-discounts');
+        const anyActive = (discountFilters.status !== 'all' || discountFilters.usage !== 'all' || discountFilters.scope !== 'all');
+        if(anyActive) btnAll.classList.remove('active-tab');
+        
+        loadDiscounts();
+    }
+
+    window.resetAllDiscountFilters = function(el) {
+        discountFilters.status = 'all';
+        discountFilters.usage = 'all';
+        discountFilters.scope = 'all';
+        
+        // Reset Dropdown Text & Selection
+        ['status', 'usage', 'scope'].forEach(type => {
+            document.getElementById(`label-${type}`).innerText = `${type.charAt(0).toUpperCase() + type.slice(1)}: All`;
+            document.querySelectorAll(`#menu-${type} .pill-option`).forEach(opt => {
+                if(opt.innerText === 'All') opt.classList.add('selected');
+                else opt.classList.remove('selected');
+            });
+        });
+
         el.classList.add('active-tab');
-        discountFilters.category = cat;
         loadDiscounts();
     }
 
@@ -186,47 +227,43 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     window.loadDiscounts = async function() {
-        // Fetch ALL then filter client-side for simplicity (Supabase logic mixing status/dates is complex in raw JS)
         let {data, error} = await supabaseClient.from('discounts').select('*').order('created_at', {ascending: false});
-        
         if(!data) return;
 
         const container = document.getElementById('discount-list');
         container.innerHTML = '';
         const now = new Date();
 
-        // CLIENT SIDE FILTERING
+        // CLIENT SIDE FILTERING (MULTI-DIMENSIONAL)
         const filteredData = data.filter(d => {
             const isExpired = new Date(d.valid_to) < now;
-            const isCanceled = d.status === 'inactive';
-            
-            // 1. Category Filter
-            if (discountFilters.category === 'active') {
-                if (isExpired || isCanceled) return false;
-            }
-            if (discountFilters.category === 'expired') {
-                if (!isExpired || isCanceled) return false;
-            }
-            if (discountFilters.category === 'inactive') {
-                if (!isCanceled) return false;
-            }
-            if (discountFilters.category === 'single') if (d.usage_type !== 'single') return false;
-            if (discountFilters.category === 'multi') if (d.usage_type !== 'multi') return false;
-            if (discountFilters.category === 'public') if (d.type !== 'public') return false;
-            if (discountFilters.category === 'private') if (d.type !== 'private') return false;
+            const isInactive = d.status === 'inactive';
+            const isActive = !isExpired && !isInactive;
 
-            // 2. Date Range Filter
+            // 1. Status Filter
+            if (discountFilters.status === 'active' && !isActive) return false;
+            if (discountFilters.status === 'inactive' && !isInactive) return false;
+            if (discountFilters.status === 'expired' && (!isExpired || isInactive)) return false;
+
+            // 2. Usage Filter
+            if (discountFilters.usage === 'single' && d.usage_type !== 'single') return false;
+            if (discountFilters.usage === 'multi' && d.usage_type !== 'multi') return false;
+
+            // 3. Scope Filter
+            if (discountFilters.scope === 'public' && d.type !== 'public') return false;
+            if (discountFilters.scope === 'private' && d.type !== 'private') return false;
+
+            // 4. Date Range Filter
             if (discountFilters.dateStart) {
                 if (new Date(d.created_at) < new Date(discountFilters.dateStart)) return false;
             }
             if (discountFilters.dateEnd) {
-                // Add 1 day to include the end date fully
                 let endDate = new Date(discountFilters.dateEnd);
                 endDate.setDate(endDate.getDate() + 1);
                 if (new Date(d.created_at) >= endDate) return false;
             }
 
-            // 3. Amount Filter
+            // 5. Amount Filter
             if (discountFilters.amount) {
                 const val = parseFloat(discountFilters.amount);
                 if (discountFilters.amountOp === 'gt') {
@@ -246,7 +283,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         filteredData.forEach(d => {
             let isExpired = new Date(d.valid_to) < now;
-            let statusText = d.status === 'inactive' ? 'Canceled' : (isExpired ? 'Expired' : 'Active');
+            let statusText = d.status === 'inactive' ? 'Inactive' : (isExpired ? 'Expired' : 'Active');
             let statusClass = (d.status === 'inactive' || isExpired) ? 'status-inactive' : 'status-active';
             
             if(d.status === 'active' && isExpired) statusText = 'Expired';
@@ -279,33 +316,95 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadDiscounts();
     }
 
-    window.viewDiscountReport = function(d) {
+    // --- ASYNC REPORT WITH TARGET COUNTING ---
+    window.viewDiscountReport = async function(d) {
         const modal = document.getElementById('discount-report-modal');
         const content = document.getElementById('report-content');
         
-        let percentage = 0;
-        // In the new logic, global usage vs limit is not the main metric, but we show what we have.
-        // We can show time elapsed percentage instead? 
-        // Or just keep usage if applicable. Let's show Time Elapsed since start.
+        // 1. Time Percentage
         const now = new Date().getTime();
         const start = new Date(d.valid_from).getTime();
         const end = new Date(d.valid_to).getTime();
         const totalDuration = end - start;
         const elapsed = now - start;
-        percentage = Math.min(100, Math.max(0, Math.round((elapsed / totalDuration) * 100)));
+        let timePerc = Math.min(100, Math.max(0, Math.round((elapsed / totalDuration) * 100)));
+        if(isNaN(timePerc)) timePerc = 0;
 
+        // 2. Usage Percentage & Label Logic
+        let usagePerc = 0;
+        let usageLabel = `${d.usage_count}`;
+        let subLabel = "Total Uses";
+
+        if (d.type === 'private') {
+            // For private codes, calculate: Total Uses / Number of Targeted Users
+            // Fetch target count first
+            content.innerHTML = '<p>Loading report data...</p>';
+            modal.style.display = 'flex';
+            
+            const { count, error } = await supabaseClient
+                .from('discount_targets')
+                .select('*', { count: 'exact', head: true })
+                .eq('discount_id', d.id);
+            
+            const targetCount = count || 0;
+            
+            if (targetCount > 0) {
+                // If usage_limit (per user) is > 1, total potential uses = targetCount * usage_limit
+                // But user asked for "Percentage of users who used it". 
+                // Since we don't track unique users easily without extra queries, we'll approximate:
+                // If it's single use, Usage Count / Target Count is accurate.
+                // If it's multi use, Usage Count could exceed Target Count. We'll cap at 100% or just show ratio.
+                usagePerc = Math.min(100, Math.round((d.usage_count / targetCount) * 100));
+                usageLabel = `${d.usage_count} / ${targetCount}`;
+                subLabel = "Used / Targets";
+            } else {
+                usagePerc = 0;
+                usageLabel = "0 / 0";
+            }
+        } else {
+            // Public Code
+            if (d.usage_limit && d.usage_limit > 0 && d.usage_type === 'multi') {
+                // Not very meaningful for public unless we have a global limit, which we don't in DB schema.
+                // So we just show 100% if active, or maybe 0.
+                // Let's keep it simple: Public codes just show count.
+                usagePerc = 100; 
+                usageLabel = `${d.usage_count}`;
+                subLabel = "Public Uses";
+            } else {
+                usagePerc = 100;
+                usageLabel = `${d.usage_count}`;
+                subLabel = "Public Uses";
+            }
+        }
+
+        // Render Report
         content.innerHTML = `
             <div style="font-size:18px; font-weight:700; color:#333; margin-bottom:5px;">${d.code}</div>
             <div style="color:#888; font-size:12px; margin-bottom:20px;">${d.type.toUpperCase()} - ${d.usage_type.toUpperCase()}</div>
             
-            <div class="report-circle" style="background: conic-gradient(${percentage < 100 ? '#FF724C' : '#aaa'} ${percentage}%, #eee 0% 100%);">
-                <span class="report-val">${percentage}%</span>
+            <div class="report-grid">
+                <!-- Time Circle -->
+                <div class="report-item">
+                    <div class="report-circle" style="background: conic-gradient(${timePerc < 100 ? '#FF724C' : '#aaa'} ${timePerc}%, #eee 0% 100%);">
+                        <span class="report-val">${timePerc}%</span>
+                    </div>
+                    <div class="report-label">Time Elapsed</div>
+                </div>
+
+                <!-- Usage Circle -->
+                <div class="report-item">
+                    <div class="report-circle" style="background: conic-gradient(#3498DB ${usagePerc}%, #eee 0% 100%);">
+                        <span class="report-val">${usagePerc}%</span>
+                    </div>
+                    <div class="report-label">Usage Rate</div>
+                    <div class="report-subval">${usageLabel}</div>
+                    <div style="font-size:10px; color:#aaa;">${subLabel}</div>
+                </div>
             </div>
-            <div style="font-size:12px; color:#555; margin-bottom:20px;">Time Elapsed</div>
 
             <div class="clean-table" style="padding:15px; text-align:left;">
                 <div class="report-info-row"><span>Total Global Uses</span> <b>${d.usage_count}</b></div>
-                <div class="report-info-row"><span>User Limit</span> <b>${d.usage_type === 'single' ? '1 per user' : d.usage_limit + ' per user'}</b></div>
+                <div class="report-info-row"><span>User Limit</span> <b>${d.usage_type === 'single' ? '1 per user' : (d.usage_limit||'∞') + ' per user'}</b></div>
                 <div class="report-info-row"><span>Min Order</span> <b>$${d.min_order_amount}</b></div>
                 <div class="report-info-row"><span>Time Left</span> <b id="countdown-timer">Calculating...</b></div>
                 <div class="report-info-row"><span>Status</span> <b style="color:${d.status==='active'?'#2ECC71':'#FF7675'}">${d.status.toUpperCase()}</b></div>
@@ -323,14 +422,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             const distance = endTime - now;
 
             if (distance < 0) {
-                document.getElementById("countdown-timer").innerHTML = "Expired";
+                const timerEl = document.getElementById("countdown-timer");
+                if(timerEl) timerEl.innerHTML = "Expired";
                 clearInterval(reportInterval);
             } else {
                 const days = Math.floor(distance / (1000 * 60 * 60 * 24));
                 const hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
                 const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
-                const seconds = Math.floor((distance % (1000 * 60)) / 1000);
-                document.getElementById("countdown-timer").innerHTML = `${days}d ${hours}h ${minutes}m ${seconds}s`;
+                const timerEl = document.getElementById("countdown-timer");
+                if(timerEl) timerEl.innerHTML = `${days}d ${hours}h ${minutes}m`;
             }
         };
         updateTimer();
@@ -349,7 +449,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('discount-report-modal').addEventListener('click', function(e) {
         if (e.target === this) closeReportModal();
     });
+    // Close dropdowns when clicking outside
+    window.onclick = function(e) {
+        if (!e.target.closest('.chip-dropdown') && !e.target.closest('.pill-dropdown')) {
+            document.querySelectorAll('.chip-menu, .pill-menu').forEach(m => m.classList.remove('show'));
+        }
+    }
 
+    // (Create/Edit/Save functions remain mostly the same)
     window.openDiscountModal = function(editData = null) {
         editingDiscountId = null;
         document.getElementById('modal-title').innerText = "Create Discount Code";
@@ -388,19 +495,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 document.getElementById('disc-end-date').value = end.toISOString().split('T')[0];
             }
         } else {
-            // Defaults for New
             const today = new Date().toISOString().split('T')[0];
             const nowTime = new Date().toTimeString().slice(0,5);
-            
             document.getElementById('disc-start-date').value = today;
             document.getElementById('disc-hour-date').value = today;
             document.getElementById('disc-start-time').value = nowTime;
             document.getElementById('disc-end-time').value = "12:00";
         }
-        
-        toggleDiscScope();
-        toggleUsageInput();
-        toggleTimeInputs();
+        toggleDiscScope(); toggleUsageInput(); toggleTimeInputs();
         document.getElementById('discount-modal').style.display = 'flex';
     }
 
@@ -408,31 +510,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         const isPrivate = document.querySelector('input[name="disc-scope"]:checked').value === 'private';
         document.getElementById('private-filters').style.display = isPrivate ? 'block' : 'none';
     }
-
     window.toggleUsageInput = function() {
         const isMulti = document.querySelector('input[name="disc-usage"]:checked').value === 'multi';
         document.getElementById('disc-usage-limit').style.display = isMulti ? 'block' : 'none';
     }
-
     window.toggleTimeInputs = function() {
         const isDaily = document.querySelector('input[name="disc-time"]:checked').value === 'daily';
         document.getElementById('time-daily').style.display = isDaily ? 'block' : 'none';
         document.getElementById('time-hourly').style.display = isDaily ? 'none' : 'block';
     }
-
     window.updateFilterInputs = function() {
         const type = document.getElementById('disc-filter-type').value;
         const inputContainer = document.getElementById('filter-input-container');
         inputContainer.style.display = (type !== 'none' && type !== 'inactive') ? 'block' : 'none';
         document.getElementById('disc-filter-val').value = '';
     }
-
     window.applyDiscountFilter = async function() {
         const filterType = document.getElementById('disc-filter-type').value;
         const filterVal = document.getElementById('disc-filter-val').value.toLowerCase().trim();
         const listContainer = document.getElementById('target-users-list');
         listContainer.innerHTML = 'Loading...';
-
         let customers = [];
         const { data: allCusts } = await supabaseClient.from('customers').select('id, name, phone, created_at');
         if (!allCusts) { listContainer.innerHTML = 'No customers found.'; return; }
@@ -445,35 +542,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const diffDays = Math.ceil(Math.abs(new Date() - new Date(userOrders[0].created_at)) / (1000 * 60 * 60 * 24)); 
                 return diffDays > 30; 
             });
-        } else if (filterType === 'name') {
-            customers = allCusts.filter(c => c.name.toLowerCase().includes(filterVal));
-        } else if (filterType === 'phone_start') {
-            customers = allCusts.filter(c => c.phone && c.phone.startsWith(filterVal));
-        } else if (filterType === 'phone_end') {
-            customers = allCusts.filter(c => c.phone && c.phone.endsWith(filterVal));
-        } else if (filterType === 'spender') {
-            const minAmount = parseFloat(filterVal);
-            if(isNaN(minAmount)) { alert("Please enter a valid amount"); return; }
+        } else if (filterType === 'name') customers = allCusts.filter(c => c.name.toLowerCase().includes(filterVal));
+        else if (filterType === 'phone_start') customers = allCusts.filter(c => c.phone && c.phone.startsWith(filterVal));
+        else if (filterType === 'phone_end') customers = allCusts.filter(c => c.phone && c.phone.endsWith(filterVal));
+        else if (filterType === 'spender') {
+            const minAmount = parseFloat(filterVal); if(isNaN(minAmount)) { alert("Invalid amount"); return; }
             const { data: orders } = await supabaseClient.from('orders').select('customer_id, total_amount');
-            const spenderIds = new Set();
-            orders.forEach(o => { if(o.total_amount >= minAmount) spenderIds.add(o.customer_id); });
+            const spenderIds = new Set(); orders.forEach(o => { if(o.total_amount >= minAmount) spenderIds.add(o.customer_id); });
             customers = allCusts.filter(c => spenderIds.has(c.id));
         }
-
         listContainer.innerHTML = '';
-        if(customers.length === 0) {
-            listContainer.innerHTML = '<div style="padding:5px;">No matching customers found.</div>';
-        } else {
-            const allDiv = document.createElement('div');
-            allDiv.className = 'user-checkbox-item';
+        if(customers.length === 0) listContainer.innerHTML = '<div style="padding:5px;">No matching customers found.</div>';
+        else {
+            const allDiv = document.createElement('div'); allDiv.className = 'user-checkbox-item';
             allDiv.innerHTML = `<input type="checkbox" id="select-all-users" onchange="document.querySelectorAll('.target-user-cb').forEach(cb => cb.checked = this.checked)"> <b>Select All (${customers.length})</b>`;
             listContainer.appendChild(allDiv);
-            customers.forEach(c => {
-                const item = document.createElement('div');
-                item.className = 'user-checkbox-item';
-                item.innerHTML = `<input type="checkbox" class="target-user-cb" value="${c.id}"> ${c.name} (${c.phone || '-'})`;
-                listContainer.appendChild(item);
-            });
+            customers.forEach(c => { const item = document.createElement('div'); item.className = 'user-checkbox-item'; item.innerHTML = `<input type="checkbox" class="target-user-cb" value="${c.id}"> ${c.name} (${c.phone || '-'})`; listContainer.appendChild(item); });
         }
     }
 
@@ -483,95 +567,59 @@ document.addEventListener('DOMContentLoaded', async () => {
         const usageType = document.querySelector('input[name="disc-usage"]:checked').value;
         const timeType = document.querySelector('input[name="disc-time"]:checked').value;
         const minOrder = parseFloat(document.getElementById('disc-min-order').value) || 0;
-        
-        if (!code) return alert("Please enter a Discount Code Name.");
+        if (!code) return alert("Enter Code Name.");
         
         let validFrom, validTo;
         if (timeType === 'daily') {
-            const dStart = document.getElementById('disc-start-date').value;
-            const dEnd = document.getElementById('disc-end-date').value;
-            if(!dStart || !dEnd) return alert("Please select start and end dates.");
-            validFrom = new Date(dStart);
-            validTo = new Date(dEnd);
-            const diffDays = (validTo - validFrom) / (1000 * 60 * 60 * 24);
-            if (diffDays > 30) return alert("Daily discounts cannot exceed 30 days.");
-            if (diffDays < 0) return alert("End date cannot be before start date.");
+            const dStart = document.getElementById('disc-start-date').value; const dEnd = document.getElementById('disc-end-date').value;
+            if(!dStart || !dEnd) return alert("Select dates.");
+            validFrom = new Date(dStart); validTo = new Date(dEnd);
+            if ((validTo - validFrom) / (1000 * 60 * 60 * 24) > 30) return alert("Max 30 days.");
         } else {
-            const dateVal = document.getElementById('disc-hour-date').value;
-            const tStart = document.getElementById('disc-start-time').value;
-            const tEnd = document.getElementById('disc-end-time').value;
-            if(!dateVal || !tStart || !tEnd) return alert("Please fill all hourly fields.");
-            validFrom = new Date(`${dateVal}T${tStart}`);
-            validTo = new Date(`${dateVal}T${tEnd}`);
-            const diffMins = (validTo - validFrom) / (1000 * 60);
-            if (diffMins > (23*60 + 59)) return alert("Hourly discounts cannot exceed 23 hours 59 minutes.");
-            if (diffMins <= 0) return alert("End time must be after start time.");
+            const dateVal = document.getElementById('disc-hour-date').value; const tStart = document.getElementById('disc-start-time').value; const tEnd = document.getElementById('disc-end-time').value;
+            if(!dateVal || !tStart || !tEnd) return alert("Fill hourly fields.");
+            validFrom = new Date(`${dateVal}T${tStart}`); validTo = new Date(`${dateVal}T${tEnd}`);
         }
 
-        // Logic Change: Single Use means "1 per user", Multi means "N per user"
-        // We set usage_limit accordingly.
         let usageLimit = 1; 
         if(usageType === 'multi') {
             usageLimit = parseInt(document.getElementById('disc-usage-limit').value);
-            if(!usageLimit || usageLimit < 1) return alert("Please enter valid usage limit.");
+            if(!usageLimit || usageLimit < 1) return alert("Invalid usage limit.");
         }
 
         let targetIds = [];
         if (scope === 'private') {
             document.querySelectorAll('.target-user-cb:checked').forEach(cb => targetIds.push(cb.value));
-            if(!editingDiscountId && targetIds.length === 0) return alert("Please select at least one customer for private discount.");
+            if(!editingDiscountId && targetIds.length === 0) return alert("Select at least one customer.");
         }
 
-        const payload = {
-            code: code,
-            type: scope,
-            usage_type: usageType,
-            usage_limit: usageLimit,
-            valid_from: validFrom.toISOString(),
-            valid_to: validTo.toISOString(),
-            min_order_amount: minOrder,
-            status: 'active'
-        };
+        const payload = { code, type: scope, usage_type: usageType, usage_limit: usageLimit, valid_from: validFrom.toISOString(), valid_to: validTo.toISOString(), min_order_amount: minOrder, status: 'active' };
 
         if(editingDiscountId) {
             await supabaseClient.from('discounts').update(payload).eq('id', editingDiscountId);
             if(scope === 'private' && targetIds.length > 0) {
                 await supabaseClient.from('discount_targets').delete().eq('discount_id', editingDiscountId);
-                const targetsPayload = targetIds.map(uid => ({ discount_id: editingDiscountId, customer_id: uid }));
-                await supabaseClient.from('discount_targets').insert(targetsPayload);
+                await supabaseClient.from('discount_targets').insert(targetIds.map(uid => ({ discount_id: editingDiscountId, customer_id: uid })));
             }
-            alert("Discount Updated Successfully!");
+            alert("Updated!");
         } else {
             const { data: discData, error: discError } = await supabaseClient.from('discounts').insert([payload]).select();
-            if(discError) {
-                if(discError.code === '23505') alert("Discount code already exists!");
-                else alert("Error creating discount.");
-                return;
-            }
+            if(discError) return alert("Error/Code exists.");
             const newDiscountId = discData[0].id;
-            if(scope === 'private' && targetIds.length > 0) {
-                const targetsPayload = targetIds.map(uid => ({ discount_id: newDiscountId, customer_id: uid }));
-                await supabaseClient.from('discount_targets').insert(targetsPayload);
-            }
-            alert("Discount Created Successfully!");
+            if(scope === 'private' && targetIds.length > 0) await supabaseClient.from('discount_targets').insert(targetIds.map(uid => ({ discount_id: newDiscountId, customer_id: uid })));
+            alert("Created!");
         }
-
         document.getElementById('discount-modal').style.display = 'none';
         loadDiscounts();
     }
 
     window.deleteDiscount = async function(id) {
-        if(confirm("Delete this discount permanently?")) {
-            await supabaseClient.from('discounts').delete().eq('id', id);
-            loadDiscounts();
-        }
+        if(confirm("Delete permanently?")) { await supabaseClient.from('discounts').delete().eq('id', id); loadDiscounts(); }
     }
-
     // --- MODAL & CHIPS ---
     document.getElementById('profile-trigger').onclick=()=>document.getElementById('profile-modal').style.display='flex';
     document.getElementById('save-profile-btn').onclick=async()=>{ const u=document.getElementById('edit-self-user').value; const p=document.getElementById('edit-self-pass').value; const c=document.getElementById('header-username').innerText; await supabaseClient.from('admins').update({username:u,password:p}).eq('username',c); window.location.href='login.html'; };
     window.toggleChip=(id)=>{ document.querySelectorAll('.chip-menu').forEach(m=>m.classList.remove('show')); document.getElementById('menu-'+id).classList.add('show'); };
     const ts=Array.from({length:24},(_,i)=>`${i.toString().padStart(2,'0')}:00`); const ds=['Mon','Tue','Wed','Thu','Fri','Sat','Sun']; ['start-time','end-time'].forEach(t=>fillM(t,ts)); ['start-day','end-day'].forEach(t=>fillM(t,ds));
     function fillM(id,arr){ const m=document.getElementById('menu-'+id); arr.forEach(v=>{ const d=document.createElement('div'); d.className='chip-option'; d.innerText=v; d.onclick=()=>{ document.querySelector(`#chip-${id} .val`).innerText=v; m.classList.remove('show'); }; m.appendChild(d); }); }
-    window.onclick=(e)=>{ if(!e.target.closest('.chip-dropdown')) document.querySelectorAll('.chip-menu').forEach(m=>m.classList.remove('show')); }
 });
